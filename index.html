@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bluetooth Tracker Scanner</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#1565C0">
+  <style>
+    body { font-family: Arial; padding: 20px; background: #121212; color: #e0e0e0; }
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #1976D2; color: white; border: none; border-radius: 4px; }
+    button:disabled { background: #444; color: #888; }
+    #device-list { list-style: none; padding: 0; }
+    #device-list li { background: #1e1e1e; margin: 10px 0; padding: 15px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.4); }
+    .device-name { font-weight: bold; font-size: 18px; }
+    .device-signal { color: #aaa; font-size: 12px; }
+    .device-rssi { color: #64B5F6; }
+    .connect-btn { padding: 5px 10px; font-size: 12px; margin-top: 10px; }
+    h1, h2 { color: #e0e0e0; }
+  </style>
+</head>
+<body>
+  <h1>Bluetooth Tracker Scanner</h1>
+  <button id="scan-btn" onclick="toggleScan()">Start Scanning</button>
+  <button id="stop-btn" onclick="stopScan()" disabled>Stop Scanning</button>
+  <button onclick="clearHistory()">Clear History</button>
+
+  <h2>Discovered Trackers</h2>
+  <ul id="device-list"></ul>
+
+  <script>
+    let scanner = null;
+    const discoveredDevices = new Map();
+
+    // Load offline history from localStorage
+    function loadHistory() {
+      const saved = localStorage.getItem('discoveredTrackers');
+      if (saved) {
+        JSON.parse(saved).forEach(d => {
+          discoveredDevices.set(d.id, d);
+        });
+        displayDevices();
+      }
+    }
+
+    // Save to offline storage
+    function saveHistory() {
+      localStorage.setItem('discoveredTrackers', JSON.stringify(Array.from(discoveredDevices.values())));
+    }
+
+    async function toggleScan() {
+      if (scanner) {
+        stopScan();
+      } else {
+        startScan();
+      }
+    }
+
+    async function startScan() {
+      try {
+        document.getElementById('scan-btn').disabled = true;
+        document.getElementById('stop-btn').disabled = false;
+
+        scanner = await navigator.bluetooth.requestLEScan({
+          filters: [], // empty = all devices
+          keepRepeatedDevices: true
+        });
+
+        scanner.addEventListener('advertisementreceived', (event) => {
+          const { device, rssi, uuids } = event;
+
+          // Update or add device
+          discoveredDevices.set(device.id, {
+            id: device.id,
+            name: device.name || 'Unknown Device',
+            rssi: rssi,
+            uuids: uuids || [],
+            timestamp: new Date().toLocaleString()
+          });
+
+          displayDevices();
+          saveHistory(); // Auto-save to offline storage
+        });
+
+        console.log('Scanning started...');
+      } catch (error) {
+        console.error('Scan failed:', error);
+        document.getElementById('scan-btn').disabled = false;
+        document.getElementById('stop-btn').disabled = true;
+      }
+    }
+
+    async function stopScan() {
+      if (scanner) {
+        await scanner.stop();
+        scanner = null;
+      }
+      document.getElementById('scan-btn').disabled = false;
+      document.getElementById('stop-btn').disabled = true;
+      console.log('Scanning stopped');
+    }
+
+    function displayDevices() {
+      const list = document.getElementById('device-list');
+      const devices = Array.from(discoveredDevices.values())
+        .sort((a, b) => b.rssi - a.rssi); // Sort by signal strength
+
+      list.innerHTML = devices.map(d => `
+        <li>
+          <div class="device-name">${d.name}</div>
+          <div class="device-signal">
+            Device ID: ${d.id}
+            <br/>
+            <span class="device-rssi">Signal: ${d.rssi} dBm</span>
+            <br/>
+            Last seen: ${d.timestamp}
+          </div>
+          <button class="connect-btn" onclick="connectDevice('${d.id}', '${d.name}')">
+            Connect & View
+          </button>
+        </li>
+      `).join('');
+    }
+
+    async function connectDevice(deviceId, deviceName) {
+      try {
+        const device = await navigator.bluetooth.getDevice(deviceId);
+        const server = await device.gatt.connect();
+        console.log(`Connected to ${deviceName}`);
+
+        // Example: Read battery service if available
+        try {
+          const service = await server.getPrimaryService('battery_service');
+          const characteristic = await service.getCharacteristic('battery_level');
+          const value = await characteristic.readValue();
+          const battery = value.getUint8(0);
+          alert(`${deviceName}\nBattery: ${battery}%`);
+        } catch {
+          alert(`Connected to ${deviceName}`);
+        }
+
+        device.gatt.disconnect();
+      } catch (error) {
+        console.error('Connection failed:', error);
+      }
+    }
+
+    function clearHistory() {
+      if (confirm('Clear all discovered devices?')) {
+        discoveredDevices.clear();
+        localStorage.removeItem('discoveredTrackers');
+        displayDevices();
+      }
+    }
+
+    // Load history on page load
+    loadHistory();
+
+    // Register Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed'));
+    }
+  </script>
+</body>
+</html>
