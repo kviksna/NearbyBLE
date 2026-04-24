@@ -17,71 +17,88 @@
     .device-rssi { color: #64B5F6; }
     .connect-btn { padding: 5px 10px; font-size: 12px; margin-top: 10px; }
     h1, h2 { color: #e0e0e0; }
-    .error-breaker {
+    .log-breaker {
       margin-top: 24px;
       border: 0;
       border-top: 1px solid #333;
     }
-    .error-console {
+    .log-console {
       margin-top: 12px;
       padding: 12px;
       border-radius: 6px;
       background: #171717;
       border: 1px solid #2f2f2f;
     }
-    .error-console h3 {
+    .log-console h3 {
       margin: 0 0 8px;
       font-size: 14px;
-      color: #ff8a80;
+      color: #90caf9;
       letter-spacing: 0.4px;
     }
-    #error-output {
+    #log-output {
       margin: 0;
-      max-height: 180px;
+      max-height: 220px;
       overflow: auto;
       white-space: pre-wrap;
       font-size: 12px;
-      color: #ffb4ab;
+      color: #cfd8dc;
     }
   </style>
 </head>
 <body>
   <h1>BLE Scanner</h1>
-  <button id="scan-btn" onclick="toggleScan()">Start Scanning</button>
-  <button id="stop-btn" onclick="stopScan()" disabled>Stop Scanning</button>
+  <button id="scan-btn" onclick="toggleScan()">Start Scan</button>
+  <button id="stop-btn" onclick="stopScan()" disabled>Stop Scan</button>
   <button onclick="clearHistory()">Clear History</button>
 
   <h2>Discovered BLE</h2>
   <ul id="device-list"></ul>
 
-  <hr class="error-breaker">
-  <section class="error-console">
-    <h3>JavaScript Error Output</h3>
-    <pre id="error-output">No errors.</pre>
+  <hr class="log-breaker">
+  <section class="log-console">
+    <h3>Verbose Log</h3>
+    <pre id="log-output">Waiting for actions...</pre>
   </section>
 
   <script>
     let scanner = null;
+    let isListeningForAds = false;
     const discoveredDevices = new Map();
 
-    function appendErrorLog(message) {
-      const output = document.getElementById('error-output');
+    function appendLog(message, level = 'INFO') {
+      const output = document.getElementById('log-output');
       const timestamp = new Date().toLocaleTimeString();
-      if (output.textContent === 'No errors.') {
+      if (output.textContent === 'Waiting for actions...') {
         output.textContent = '';
       }
-      output.textContent += `[${timestamp}] ${message}\n`;
+      output.textContent += `[${timestamp}] [${level}] ${message}\n`;
       output.scrollTop = output.scrollHeight;
     }
 
     window.addEventListener('error', (event) => {
-      appendErrorLog(`${event.message} (${event.filename}:${event.lineno})`);
+      appendLog(`${event.message} (${event.filename}:${event.lineno})`, 'ERROR');
     });
 
     window.addEventListener('unhandledrejection', (event) => {
       const reason = event.reason && event.reason.message ? event.reason.message : String(event.reason);
-      appendErrorLog(`Unhandled promise rejection: ${reason}`);
+      appendLog(`Unhandled promise rejection: ${reason}`, 'ERROR');
     });
+
+    function handleAdvertisement(event) {
+      const { device, rssi, uuids } = event;
+
+      discoveredDevices.set(device.id, {
+        id: device.id,
+        name: device.name || 'Unknown Device',
+        rssi: rssi,
+        uuids: uuids || [],
+        timestamp: new Date().toLocaleString()
+      });
+
+      appendLog(`Discovered ${device.name || 'Unknown Device'} (${device.id}) RSSI ${rssi} dBm`);
+      displayDevices();
+      saveHistory();
+    }
 
     // Load offline history from localStorage
     function loadHistory() {
@@ -109,33 +126,33 @@
 
     async function startScan() {
       try {
+        if (!('bluetooth' in navigator)) {
+          appendLog('Web Bluetooth is not available in this browser.', 'ERROR');
+          return;
+        }
+
+        if (typeof navigator.bluetooth.requestLEScan !== 'function') {
+          appendLog('LE Scan API is not supported. Try Chrome/Edge on Android or desktop with flags enabled.', 'ERROR');
+          return;
+        }
+
         document.getElementById('scan-btn').disabled = true;
         document.getElementById('stop-btn').disabled = false;
+        appendLog('Starting BLE scan...');
 
         scanner = await navigator.bluetooth.requestLEScan({
           filters: [], // empty = all devices
           keepRepeatedDevices: true
         });
 
-        scanner.addEventListener('advertisementreceived', (event) => {
-          const { device, rssi, uuids } = event;
+        if (!isListeningForAds) {
+          navigator.bluetooth.addEventListener('advertisementreceived', handleAdvertisement);
+          isListeningForAds = true;
+        }
 
-          // Update or add device
-          discoveredDevices.set(device.id, {
-            id: device.id,
-            name: device.name || 'Unknown Device',
-            rssi: rssi,
-            uuids: uuids || [],
-            timestamp: new Date().toLocaleString()
-          });
-
-          displayDevices();
-          saveHistory(); // Auto-save to offline storage
-        });
-
-        console.log('Scanning started...');
+        appendLog('Scanning started and listener attached.');
       } catch (error) {
-        console.error('Scan failed:', error);
+        appendLog(`Scan failed: ${error.message || error}`, 'ERROR');
         document.getElementById('scan-btn').disabled = false;
         document.getElementById('stop-btn').disabled = true;
       }
@@ -143,12 +160,12 @@
 
     async function stopScan() {
       if (scanner) {
-        await scanner.stop();
+        scanner.stop();
         scanner = null;
+        appendLog('Scanning stopped.');
       }
       document.getElementById('scan-btn').disabled = false;
       document.getElementById('stop-btn').disabled = true;
-      console.log('Scanning stopped');
     }
 
     function displayDevices() {
@@ -177,7 +194,7 @@
       try {
         const device = await navigator.bluetooth.getDevice(deviceId);
         const server = await device.gatt.connect();
-        console.log(`Connected to ${deviceName}`);
+        appendLog(`Connected to ${deviceName}.`);
 
         // Example: Read battery service if available
         try {
@@ -191,8 +208,9 @@
         }
 
         device.gatt.disconnect();
+        appendLog(`Disconnected from ${deviceName}.`);
       } catch (error) {
-        console.error('Connection failed:', error);
+        appendLog(`Connection failed: ${error.message || error}`, 'ERROR');
       }
     }
 
@@ -201,15 +219,19 @@
         discoveredDevices.clear();
         localStorage.removeItem('discoveredTrackers');
         displayDevices();
+        appendLog('History cleared.');
       }
     }
 
     // Load history on page load
     loadHistory();
+    appendLog('Page loaded. Ready to scan.');
 
     // Register Service Worker for PWA
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed'));
+      navigator.serviceWorker.register('sw.js')
+        .then(() => appendLog('Service worker registered.'))
+        .catch(err => appendLog(`Service worker registration failed: ${err.message || err}`, 'WARN'));
     }
   </script>
 </body>
