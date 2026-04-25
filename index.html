@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bluetooth Tracker Scanner</title>
+  <title>BLE Scanner</title>
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#1565C0">
   <style>
@@ -229,37 +229,37 @@
     async function connectDevice(deviceId, deviceName) {
       try {
         let device = runtimeDevices.get(deviceId);
-
-        if (!device && typeof navigator.bluetooth.getDevices === 'function') {
-          const devices = await navigator.bluetooth.getDevices();
-          device = devices.find((d) => d.id === deviceId);
-          if (device) {
-            runtimeDevices.set(deviceId, device);
-          }
-        }
-
-        if (!device) {
-          throw new Error('Device not available. Tap Start Scan to select it again.');
-        }
+        if (!device) throw new Error('Device not available.');
 
         const server = await device.gatt.connect();
         appendLog(`Connected to ${deviceName}.`);
 
-        // Example: Read battery service if available
-        try {
-          const service = await server.getPrimaryService('battery_service');
-          const characteristic = await service.getCharacteristic('battery_level');
-          const value = await characteristic.readValue();
-          const battery = value.getUint8(0);
-          alert(`${deviceName}\nBattery: ${battery}%`);
-        } catch {
-          alert(`Connected to ${deviceName}`);
+        // Discover all primary services
+        const services = await server.getPrimaryServices();
+        appendLog(`Found ${services.length} services.`);
+
+        for (const service of services) {
+          appendLog(`Service: ${service.uuid}`);
+          
+          // Get all characteristics in this service
+          const chars = await service.getCharacteristics();
+          for (const char of chars) {
+            try {
+              if (char.properties.read) {
+                const value = await char.readValue();
+                const text = new TextDecoder().decode(value);
+                appendLog(`  ${char.uuid}: ${text}`);
+              }
+            } catch (err) {
+              appendLog(`  ${char.uuid}: (unreadable)`, 'WARN');
+            }
+          }
         }
 
         device.gatt.disconnect();
         appendLog(`Disconnected from ${deviceName}.`);
       } catch (error) {
-        appendLog(`Connection failed: ${error.message || error}`, 'ERROR');
+        appendLog(`Connection failed: ${error.message}`, 'ERROR');
       }
     }
 
