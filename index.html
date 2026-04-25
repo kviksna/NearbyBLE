@@ -64,6 +64,7 @@
     let scanner = null;
     let isListeningForAds = false;
     const discoveredDevices = new Map();
+    const runtimeDevices = new Map();
 
     function appendLog(message, level = 'INFO') {
       const output = document.getElementById('log-output');
@@ -86,6 +87,7 @@
 
     function handleAdvertisement(event) {
       const { device, rssi, uuids } = event;
+      runtimeDevices.set(device.id, device);
 
       discoveredDevices.set(device.id, {
         id: device.id,
@@ -98,6 +100,36 @@
       appendLog(`Discovered ${device.name || 'Unknown Device'} (${device.id}) RSSI ${rssi} dBm`);
       displayDevices();
       saveHistory();
+    }
+
+    async function startDevicePickerFallback() {
+      appendLog('LE Scan unavailable. Using requestDevice fallback (one device per tap).', 'WARN');
+
+      try {
+        const device = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ['battery_service']
+        });
+
+        runtimeDevices.set(device.id, device);
+
+        discoveredDevices.set(device.id, {
+          id: device.id,
+          name: device.name || 'Unknown Device',
+          rssi: Number.NEGATIVE_INFINITY,
+          uuids: [],
+          timestamp: new Date().toLocaleString()
+        });
+
+        appendLog(`Selected ${device.name || 'Unknown Device'} (${device.id}) via fallback picker.`);
+        displayDevices();
+        saveHistory();
+      } catch (error) {
+        appendLog(`Fallback device picker failed: ${error.message || error}`, 'ERROR');
+      } finally {
+        document.getElementById('scan-btn').disabled = false;
+        document.getElementById('stop-btn').disabled = true;
+      }
     }
 
     // Load offline history from localStorage
@@ -131,13 +163,15 @@
           return;
         }
 
+        document.getElementById('scan-btn').disabled = true;
+        document.getElementById('stop-btn').disabled = false;
+
         if (typeof navigator.bluetooth.requestLEScan !== 'function') {
-          appendLog('LE Scan API is not supported. Try Chrome/Edge on Android or desktop with flags enabled.', 'ERROR');
+          document.getElementById('stop-btn').disabled = true;
+          await startDevicePickerFallback();
           return;
         }
 
-        document.getElementById('scan-btn').disabled = true;
-        document.getElementById('stop-btn').disabled = false;
         appendLog('Starting BLE scan...');
 
         scanner = await navigator.bluetooth.requestLEScan({
@@ -163,6 +197,8 @@
         scanner.stop();
         scanner = null;
         appendLog('Scanning stopped.');
+      } else {
+        appendLog('No active LE scan to stop.', 'WARN');
       }
       document.getElementById('scan-btn').disabled = false;
       document.getElementById('stop-btn').disabled = true;
@@ -192,7 +228,20 @@
 
     async function connectDevice(deviceId, deviceName) {
       try {
-        const device = await navigator.bluetooth.getDevice(deviceId);
+        let device = runtimeDevices.get(deviceId);
+
+        if (!device && typeof navigator.bluetooth.getDevices === 'function') {
+          const devices = await navigator.bluetooth.getDevices();
+          device = devices.find((d) => d.id === deviceId);
+          if (device) {
+            runtimeDevices.set(deviceId, device);
+          }
+        }
+
+        if (!device) {
+          throw new Error('Device not available. Tap Start Scan to select it again.');
+        }
+
         const server = await device.gatt.connect();
         appendLog(`Connected to ${deviceName}.`);
 
